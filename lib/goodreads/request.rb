@@ -4,7 +4,7 @@ require "hashie"
 
 module Goodreads
   module Request
-    API_URL    = "http://www.goodreads.com"
+    API_URL    = "https://www.goodreads.com"
     API_FORMAT = "xml"
 
     protected
@@ -25,7 +25,7 @@ module Goodreads
       resp = RestClient.get(url, params: params) do |response, request, result, &block|
         case response.code
         when 200
-          response.return!(request, result, &block)
+          response.return!(&block)
         when 401
           fail(Goodreads::Unauthorized)
         when 403
