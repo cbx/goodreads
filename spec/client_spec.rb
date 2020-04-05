@@ -1,7 +1,7 @@
 require "spec_helper"
 require "oauth"
 
-describe "Client" do
+describe Goodreads::Client do
   let(:client)  { Goodreads::Client.new(api_key: "SECRET_KEY") }
   before(:each) { Goodreads.reset_configuration }
 
@@ -14,6 +14,45 @@ describe "Client" do
     it "requires a hash argument" do
       expect { Goodreads::Client.new("foo") }
         .to raise_error(ArgumentError, "Options hash required.")
+    end
+  end
+
+  describe "#oauth_configured?" do
+    it "is true when OAuth token provided to constructor" do
+      client = Goodreads::Client.new(oauth_token: "a token")
+      expect(client.oauth_configured?).to be true
+    end
+
+    it "is true when oauth token is not provided to constructor" do
+      client = Goodreads::Client.new(api_key: "SECRET_KEY")
+      expect(client.oauth_configured?).to be false
+    end
+  end
+
+  describe "#request" do
+    context "with oauth token" do
+      it "makes an oauth request" do
+        oauth_token = double
+        response = double
+
+        allow(oauth_token).to receive(:request) { response }
+        allow(response).to receive(:body) { fixture("book.xml") }
+
+        client = Goodreads::Client.new(oauth_token: oauth_token)
+        expect(client.book(123)).to be_a Hash
+      end
+    end
+
+    context "without oauth token" do
+      before do
+        allow(client).to receive(:http_request) {
+          Hash.from_xml(fixture("book.xml"))["GoodreadsResponse"]
+        }
+      end
+
+      it "makes a request" do
+        expect(client.book(123)).to be_a Hash
+      end
     end
   end
 
@@ -154,6 +193,26 @@ describe "Client" do
     end
   end
 
+  describe "#user_review" do
+    let(:consumer) { OAuth::Consumer.new("API_KEY", "SECRET_KEY", site: "https://www.goodreads.com") }
+    let(:token)    { OAuth::AccessToken.new(consumer, "ACCESS_TOKEN", "ACCESS_SECRET") }
+
+    it "returns a user's existing review" do
+      stub_request(:get, "https://www.goodreads.com/review/show_by_user_and_book.xml?book_id=50&user_id=1&v=2")
+        .to_return(status: 200, body: fixture("review_show_by_user_and_book.xml"))
+
+      client = Goodreads::Client.new(api_key: "SECRET_KEY", oauth_token: token)
+      review = client.user_review(1, 50)
+
+      expect(review.id).to eq("21")
+      expect(review.book.id).to eq(50)
+
+      expect(review.rating).to eq("5")
+      expect(review.body.strip).to eq("")
+      expect(review.date_added).to eq("Tue Aug 29 11:20:01 -0700 2006")
+    end
+  end
+
   describe "#author" do
     before { stub_with_key_get("/author/show", { id: "18541" }, "author.xml") }
 
@@ -284,6 +343,131 @@ describe "Client" do
       expect(shelf.end).to eq(0)
       expect(shelf.total).to eq(0)
       expect(shelf.books.length).to eq(0)
+    end
+  end
+
+  describe "#add_to_shelf" do
+    let(:consumer) { OAuth::Consumer.new("API_KEY", "SECRET_KEY", site: "https://www.goodreads.com") }
+    let(:token)    { OAuth::AccessToken.new(consumer, "ACCESS_TOKEN", "ACCESS_SECRET") }
+
+    it "adds a book to a user's shelf" do
+      stub_request(:post, "https://www.goodreads.com/shelf/add_to_shelf.xml")
+        .with(:body => {"book_id"=>"456", "name"=>"read", "v"=>"2"})
+        .to_return(status: 201, body: fixture("shelf_add_to_shelf.xml"))
+
+      client = Goodreads::Client.new(api_key: "SECRET_KEY", oauth_token: token)
+      review = client.add_to_shelf(456, "read")
+
+      expect(review.id).to eq(2416981504)
+      expect(review.book_id).to eq(456)
+
+      expect(review.rating).to eq(0)
+      expect(review.body).to be nil
+      expect(review.body_raw).to be nil
+      expect(review.spoiler).to be false
+
+      expect(review.shelves.size).to eq(1)
+      expect(review.shelves.first.name).to eq("read")
+      expect(review.shelves.first.id).to eq(269274694)
+      expect(review.shelves.first.exclusive).to be true
+      expect(review.shelves.first.sortable).to be false
+
+
+      expect(review.read_at).to be nil
+      expect(review.started_at).to be nil
+      expect(review.date_added).to eq("Thu Jun 07 19:58:19 -0700 2018")
+      expect(review.updated_at).to eq("Thu Jun 07 19:58:53 -0700 2018")
+
+      expect(review.body).to be nil
+      expect(review.body_raw).to be nil
+      expect(review.spoiler).to be false
+    end
+  end
+
+  describe "#create_review" do
+    let(:consumer) { OAuth::Consumer.new("API_KEY", "SECRET_KEY", site: "https://www.goodreads.com") }
+    let(:token)    { OAuth::AccessToken.new(consumer, "ACCESS_TOKEN", "ACCESS_SECRET") }
+
+    it "creates a new review for a book" do
+      stub_request(:post, "https://www.goodreads.com/review.xml")
+        .with(:body => {
+          "book_id"=>"456",
+          "review" => {
+            "rating" => "3",
+            "review" => "Good book.",
+            "read_at" => "2018-01-02",
+          },
+          "shelf" => "read",
+          "v"=>"2",
+        })
+        .to_return(status: 201, body: fixture("review_create.xml"))
+
+      client = Goodreads::Client.new(api_key: "SECRET_KEY", oauth_token: token)
+      review = client.create_review(456, {
+        :review => "Good book.",
+        :rating => 3,
+        :read_at => Time.parse('2018-01-02'),
+        :shelf => "read",
+      })
+
+      expect(review.id).to eq("67890")
+      expect(review.book.id).to eq(456)
+      expect(review.rating).to eq("3")
+      expect(review.body).to eq("Good book.")
+    end
+  end
+
+  describe "#edit_review" do
+    let(:consumer) { OAuth::Consumer.new("API_KEY", "SECRET_KEY", site: "https://www.goodreads.com") }
+    let(:token)    { OAuth::AccessToken.new(consumer, "ACCESS_TOKEN", "ACCESS_SECRET") }
+
+    it "creates a new review for a book" do
+      stub_request(:post, "https://www.goodreads.com/review/67890.xml")
+        .with(:body => {
+          "finished" => "true",
+          "review" => {
+            "rating" => "5",
+            "review" => "Fantastic book.",
+            "read_at" => "2018-04-15",
+          },
+          "shelf" => "read",
+          "v"=>"2",
+        })
+        .to_return(status: 201, body: fixture("review_update.xml"))
+
+      client = Goodreads::Client.new(api_key: "SECRET_KEY", oauth_token: token)
+      review = client.edit_review(67890, {
+        :finished => true,
+        :review => "Fantastic book.",
+        :rating => 5,
+        :read_at => Time.parse('2018-04-15'),
+        :shelf => "read",
+      })
+
+      expect(review.id).to eq("67890")
+      expect(review.book.id).to eq(456)
+      expect(review.rating).to eq("5")
+      expect(review.body).to eq("Fantastic book.")
+    end
+  end
+
+  describe "#shelves" do
+    it "returns list of user's shelves" do
+      stub_with_key_get("/shelf/list.xml", { user_id: 123, v: "2" }, "shelf_list.xml")
+
+      response = client.shelves(123)
+
+      expect(response).to respond_to(:start)
+      expect(response).to respond_to(:end)
+      expect(response).to respond_to(:total)
+      expect(response).to respond_to(:shelves)
+
+      expect(response.start).to eq(1)
+      expect(response.end).to eq(3)
+      expect(response.total).to eq(3)
+      expect(response.shelves.length).to eq(3)
+      expect(response.shelves.first.id).to eq(9049904)
+      expect(response.shelves.first.name).to eq("read")
     end
   end
 
